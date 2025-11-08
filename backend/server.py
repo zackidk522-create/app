@@ -30,7 +30,7 @@ api_router = APIRouter(prefix="/api")
 # OpenRouter configuration
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "deepseek/deepseek-chat-v3-0324:free"
+DEFAULT_MODEL = "deepseek/deepseek-chat"
 SITE_URL = "https://github.com/kafyasfngl/worm-ai"
 SITE_NAME = "WormGPT AI"
 
