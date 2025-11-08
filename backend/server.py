@@ -98,34 +98,60 @@ class MessageResponse(BaseModel):
 
 
 def call_openrouter_api(messages_history: List[dict]) -> str:
-    """Call OpenRouter API with DeepSeek model"""
-    try:
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "HTTP-Referer": SITE_URL,
-            "X-Title": SITE_NAME,
-            "Content-Type": "application/json"
-        }
-        
-        data = {
-            "model": DEFAULT_MODEL,
-            "messages": messages_history,
-            "max_tokens": 2000,
-            "temperature": 0.7
-        }
-        
-        response = requests.post(
-            f"{OPENROUTER_BASE_URL}/chat/completions",
-            headers=headers,
-            json=data,
-            timeout=60
-        )
-        response.raise_for_status()
-        return response.json()['choices'][0]['message']['content']
-        
-    except Exception as e:
-        logging.error(f"OpenRouter API Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+    """Call OpenRouter API with DeepSeek model with retry logic"""
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "HTTP-Referer": SITE_URL,
+                "X-Title": SITE_NAME,
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "model": DEFAULT_MODEL,
+                "messages": messages_history,
+                "max_tokens": 2000,
+                "temperature": 0.7
+            }
+            
+            response = requests.post(
+                f"{OPENROUTER_BASE_URL}/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=60
+            )
+            
+            # If rate limited, wait and retry
+            if response.status_code == 429:
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)
+                    logging.warning(f"Rate limited, waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise HTTPException(
+                        status_code=429, 
+                        detail="Rate limit exceeded. Please wait a moment and try again."
+                    )
+            
+            response.raise_for_status()
+            return response.json()['choices'][0]['message']['content']
+            
+        except requests.exceptions.HTTPError as e:
+            if attempt < max_retries - 1 and "429" in str(e):
+                wait_time = retry_delay * (attempt + 1)
+                logging.warning(f"Rate limit error, waiting {wait_time} seconds before retry")
+                time.sleep(wait_time)
+                continue
+            logging.error(f"OpenRouter API Error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+        except Exception as e:
+            logging.error(f"OpenRouter API Error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
 
 
 # Chat Session Routes
