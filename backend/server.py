@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,9 +6,10 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 
 ROOT_DIR = Path(__file__).parent
@@ -27,44 +28,147 @@ api_router = APIRouter(prefix="/api")
 
 
 # Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
+class ChatSession(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
+    title: str = "New Chat"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Message(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    chat_id: str
+    role: str  # "user" or "assistant"
+    content: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
+class ChatCreate(BaseModel):
+    title: Optional[str] = "New Chat"
+
+
+class MessageCreate(BaseModel):
+    chat_id: str
+    content: str
+
+
+class MessageResponse(BaseModel):
+    message: Message
+    response: str
+
+
+# Chat Session Routes
+@api_router.post("/chats", response_model=ChatSession)
+async def create_chat(input: ChatCreate):
+    chat = ChatSession(title=input.title)
+    doc = chat.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    doc['updated_at'] = doc['updated_at'].isoformat()
+    
+    await db.chats.insert_one(doc)
+    return chat
+
+
+@api_router.get("/chats", response_model=List[ChatSession])
+async def get_chats():
+    chats = await db.chats.find({}, {"_id": 0}).sort("updated_at", -1).to_list(1000)
+    
+    for chat in chats:
+        if isinstance(chat['created_at'], str):
+            chat['created_at'] = datetime.fromisoformat(chat['created_at'])
+        if isinstance(chat['updated_at'], str):
+            chat['updated_at'] = datetime.fromisoformat(chat['updated_at'])
+    
+    return chats
+
+
+@api_router.delete("/chats/{chat_id}")
+async def delete_chat(chat_id: str):
+    # Delete chat and all its messages
+    await db.chats.delete_one({"id": chat_id})
+    await db.messages.delete_many({"chat_id": chat_id})
+    return {"status": "deleted"}
+
+
+# Message Routes
+@api_router.get("/chats/{chat_id}/messages", response_model=List[Message])
+async def get_messages(chat_id: str):
+    messages = await db.messages.find({"chat_id": chat_id}, {"_id": 0}).sort("timestamp", 1).to_list(1000)
+    
+    for msg in messages:
+        if isinstance(msg['timestamp'], str):
+            msg['timestamp'] = datetime.fromisoformat(msg['timestamp'])
+    
+    return messages
+
+
+@api_router.post("/chats/{chat_id}/messages", response_model=MessageResponse)
+async def send_message(chat_id: str, input: MessageCreate):
+    # Verify chat exists
+    chat = await db.chats.find_one({"id": chat_id}, {"_id": 0})
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    # Save user message
+    user_message = Message(
+        chat_id=chat_id,
+        role="user",
+        content=input.content
+    )
+    user_msg_doc = user_message.model_dump()
+    user_msg_doc['timestamp'] = user_msg_doc['timestamp'].isoformat()
+    await db.messages.insert_one(user_msg_doc)
+    
+    # Get chat history for context
+    messages_history = await db.messages.find(
+        {"chat_id": chat_id}, 
+        {"_id": 0}
+    ).sort("timestamp", 1).to_list(1000)
+    
+    # Prepare messages for LLM
+    try:
+        # Initialize LLM chat
+        llm_chat = LlmChat(
+            api_key=os.environ.get('EMERGENT_LLM_KEY'),
+            session_id=chat_id,
+            system_message="You are WormGPT, a highly capable AI assistant. When providing code, always format it properly with language-specific syntax."
+        ).with_model("openai", "gpt-4o-mini")
+        
+        # Send message to LLM
+        llm_user_message = UserMessage(text=input.content)
+        ai_response = await llm_chat.send_message(llm_user_message)
+        
+        # Save AI response
+        ai_message = Message(
+            chat_id=chat_id,
+            role="assistant",
+            content=ai_response
+        )
+        ai_msg_doc = ai_message.model_dump()
+        ai_msg_doc['timestamp'] = ai_msg_doc['timestamp'].isoformat()
+        await db.messages.insert_one(ai_msg_doc)
+        
+        # Update chat's updated_at timestamp
+        await db.chats.update_one(
+            {"id": chat_id},
+            {"$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        
+        return MessageResponse(message=user_message, response=ai_response)
+        
+    except Exception as e:
+        logging.error(f"Error calling LLM: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+
+
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "WormGPT API is running"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
 
 # Include the router in the main app
 app.include_router(api_router)
