@@ -227,34 +227,39 @@ function App() {
                 }`}
               >
                 {msg.role === 'assistant' ? (
-                  <ReactMarkdown
-                    className="prose prose-invert max-w-none"
-                    components={{
-                      code({ node, inline, className, children, ...props }) {
-                        const match = /language-(\w+)/.exec(className || '');
-                        return !inline && match ? (
-                          <SyntaxHighlighter
-                            style={atomDark}
-                            language={match[1]}
-                            PreTag="div"
-                            className="rounded-lg my-2"
-                            {...props}
-                          >
-                            {String(children).replace(/\n$/, '')}
-                          </SyntaxHighlighter>
-                        ) : (
-                          <code
-                            className="bg-red-900/50 text-red-200 px-2 py-1 rounded text-sm"
-                            {...props}
-                          >
-                            {children}
-                          </code>
-                        );
-                      },
-                    }}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
+                  <div className="prose prose-invert max-w-none">
+                    <ReactMarkdown
+                      components={{
+                        code({ node, inline, className, children, ...props }) {
+                          const match = /language-(\w+)/.exec(className || '');
+                          return !inline && match ? (
+                            <SyntaxHighlighter
+                              style={atomDark}
+                              language={match[1]}
+                              PreTag="div"
+                              customStyle={{
+                                borderRadius: '0.5rem',
+                                marginTop: '0.5rem',
+                                marginBottom: '0.5rem'
+                              }}
+                              {...props}
+                            >
+                              {String(children).replace(/\n$/, '')}
+                            </SyntaxHighlighter>
+                          ) : (
+                            <code
+                              className="bg-red-900/50 text-red-200 px-2 py-1 rounded text-sm"
+                              {...props}
+                            >
+                              {children}
+                            </code>
+                          );
+                        },
+                      }}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
                 ) : (
                   <p className="whitespace-pre-wrap">{msg.content}</p>
                 )}
