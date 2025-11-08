@@ -10,6 +10,7 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 import requests
+import time
 
 
 ROOT_DIR = Path(__file__).parent
